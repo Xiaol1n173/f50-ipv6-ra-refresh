@@ -648,7 +648,7 @@ ls ${RRA.scriptPath} >/dev/null 2>&1 && echo "INST:1" || echo "INST:0"
         if (!(await checkAdvancedFunc())) return createToast('请先启用高级功能', 'pink')
         if (uniTimer) clearTimeout(uniTimer)
         uniTimer = setTimeout(() => { uniCount = 0 }, 2000)
-        if (uniCount++ < 3) return createToast(`危险操作！再点击 ${3 - uniCount} 次确认卸载`, 'pink')
+        if (uniCount++ < 2) return createToast(`危险操作！再点击 ${3 - uniCount} 次确认卸载`, 'pink')
         uniCount = 0
         await stopWatcher(true)
         await runShellWithRoot(`sed -i '/refresh_route_watch/d' ${RRA.bootPath}`)
