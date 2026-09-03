@@ -471,6 +471,45 @@ ls ${RRA.scriptPath} >/dev/null 2>&1 && echo "INST:1" || echo "INST:0"
         else createToast('执行出错，详情见日志', 'red')
     }
 
+    // 删除当前 RA 默认路由（危险操作：删除后 IPv6 默认路由真空，直到收到新 RA 或下次调度重建；
+    // 可配合「立即刷新」强制走 nd_rebuild / ra_replace 从空表重建）
+    // 路由定位规则与状态显示、核心脚本 find_route() 保持一致：default via fe80 + dev $DEV
+    // 输出协议：RRA_DEL:none=未找到路由  RRA_DEL:ok=已删除  RRA_DEL:fail=删除后仍存在
+    const deleteRoute = async () => {
+        if (!(await checkAdvancedFunc())) return createToast('请先启用高级功能', 'pink')
+        const res = await runShellWithRoot(String.raw`
+DEV=""
+for i in 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
+    if ip link show dev sipa_eth$i 2>/dev/null | grep -q 'state UP'; then DEV=sipa_eth$i; break; fi
+done
+[ -n "$DEV" ] || DEV="sipa_eth8"
+RL=$(ip -6 route show table all 2>/dev/null | grep '^default via fe80' | grep -m1 " dev $DEV ")
+if [ -z "$RL" ]; then
+    echo "RRA_DEL:none"
+    exit 0
+fi
+GW=$(echo "$RL" | sed -n 's/.* via \([^ ]*\) .*/\1/p')
+TABLE=$(echo "$RL" | sed -n 's/.* table \([^ ]*\).*/\1/p')
+[ -n "$TABLE" ] || TABLE="$DEV"
+if [ -n "$GW" ]; then
+    ip -6 route del default via "$GW" dev "$DEV" table "$TABLE" 2>/dev/null
+else
+    ip -6 route del default dev "$DEV" table "$TABLE" 2>/dev/null
+fi
+if ip -6 route show table all 2>/dev/null | grep '^default via fe80' | grep -q " dev $DEV "; then
+    echo "RRA_DEL:fail"
+else
+    echo "RRA_DEL:ok"
+fi
+`)
+        const m = (res?.content || '').match(/RRA_DEL:(\w+)/)
+        if (!m) createToast('执行超时或无输出，请重试', 'red')
+        else if (m[1] === 'none') createToast('未找到 RA 默认路由，无需删除', 'orange')
+        else if (m[1] === 'ok') createToast('已删除当前路由（可点「立即刷新」重建）', 'green')
+        else createToast('删除失败，请重试', 'red')
+        await refreshAll()
+    }
+
     // 校验并落地 rdisc6（下载/上传共用）
     const finalizeRdisc6 = async () => {
         const chmod = await runShellWithRoot(`chmod 777 ${RRA.rdPath}`)
@@ -591,7 +630,7 @@ ls ${RRA.scriptPath} >/dev/null 2>&1 && echo "INST:1" || echo "INST:0"
                                 <div id="rra_bar" style="height:100%;width:0%;background:#4caf50;transition:all .5s;"></div>
                             </div>
                             <div style="margin-top:6px;font-size:.66rem;opacity:.75;">
-                                原理：F50 用移动卡时仅在数据连接建立瞬间收到一次 RA，默认路由 expires 65536s 到期后不会被刷新，导致 IPv6 断网；本插件不做阈值判断，完全由定时调度周期性续期（优先 rdisc6 标准 ND 流程，其次 RA 同构路由重建），并记录上次刷新成功的策略。
+                                原理：F50 用移动卡时仅在数据连接建立瞬间收到一次 RA，之后不会收到周期RA，造成ipv6默认路由 expires 65536s 到期后不会被刷新，导致 IPv6 断网；本插件由定时调度周期性续期，优先使用 rdisc6 进行标准 ND 流程，不可用时回退到仅对原路由续期。
                             </div>
                         </div>
                         <div id="rra_action_box" style="margin:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center;"></div>
@@ -623,6 +662,19 @@ ls ${RRA.scriptPath} >/dev/null 2>&1 && echo "INST:1" || echo "INST:0"
     const runNowBtn = document.createElement('button')
     runNowBtn.textContent = '立即刷新'
     runNowBtn.onclick = runNow
+
+    // 删除当前路由（点击3次确认，参考卸载按钮防误触写法）
+    let delCount = 0
+    let delTimer = null
+    const deleteRouteBtn = document.createElement('button')
+    deleteRouteBtn.textContent = '删除当前路由'
+    deleteRouteBtn.onclick = async () => {
+        if (delTimer) clearTimeout(delTimer)
+        delTimer = setTimeout(() => { delCount = 0 }, 2000)
+        if (delCount++ < 2) return createToast(`危险操作！再点击 ${3 - delCount} 次确认删除路由（IPv6 将短暂断流）`, 'pink')
+        delCount = 0
+        await deleteRoute()
+    }
 
     const downloadBtn = document.createElement('button')
     downloadBtn.textContent = '下载rdisc6'
@@ -715,6 +767,7 @@ ls ${RRA.scriptPath} >/dev/null 2>&1 && echo "INST:1" || echo "INST:0"
 
     mmBox.appendChild(installBtn)
     mmBox.appendChild(runNowBtn)
+    mmBox.appendChild(deleteRouteBtn)
     mmBox.appendChild(downloadBtn)
     mmBox.appendChild(uploadBtn)
     mmBox.appendChild(startBtn)

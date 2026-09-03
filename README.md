@@ -52,6 +52,7 @@ ip -6 route replace default via fe80::2 dev sipa_eth8 table sipa_eth8 expires 60
 ```
 
 3. 面板内选择调度间隔（5 分钟 ~ 6 小时），按需打开「开机自启」（写入 `/sdcard/ufi_tools_boot.sh`，开机自动拉起调度器）
+4. 面板提供「删除当前路由」按钮（连续点击 3 次确认，防止误触）：手动删除当前的 RA 默认路由。删除后 IPv6 默认路由短暂真空，直到网关重新下发 RA 或下次调度重建；可立即点「立即刷新」强制从空表重建原生路由（等价于刷新流程中的第 2 次 RS 路径）。路由定位规则与状态显示、核心脚本一致（`default via fe80::...` + 活动数据口）
 
 ## rdisc6 编译（aarch64 musl 静态）
 
