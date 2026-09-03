@@ -29,7 +29,8 @@
 
     // 核心脚本：移植自 refresh_route.sh（修复中兴 F50 移动卡 IPv6 默认路由不随 RA 刷新、65536s 后掉线）
     // 无阈值判断：完全由定时调度驱动，每次触发直接续期
-    // 返回值：0=正常或无需操作  1=出错  2=条件不满足而跳过
+    // 并发锁：同一时刻仅允许一个实例执行（watcher 调度与手动刷新互斥）
+    // 返回值：0=正常或无需操作  1=出错  2=条件不满足而跳过（含并发锁让位）
     const REFRESH_SH = String.raw`#!/system/bin/sh
 #
 # refresh_route.sh —— 修复中兴 F50（移动卡）IPv6 默认路由不随 RA 刷新、65536s 后掉线的问题
@@ -60,6 +61,30 @@ log() { echo "[$(date '+%m-%d %H:%M:%S')] $*" | tee -a "$LOG" 2>/dev/null; }
 set_strategy() { printf '%s\n%s\n' "$1" "$(date +%s)" > "$STRATEGY_FILE" 2>/dev/null; }
 
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt "$LOG_MAX" ] && : > "$LOG"
+
+# ================= 并发锁（watcher 调度与手动刷新互斥，自动清理陈旧锁） =================
+LOCK="$STATE_DIR/.refresh_route.lock"
+take_lock() {
+    mkdir "$LOCK" 2>/dev/null || return 1
+    echo $$ > "$LOCK/pid"
+    trap 'rm -rf "$LOCK" 2>/dev/null' EXIT INT TERM
+    return 0
+}
+acquire_lock() {
+    if take_lock; then return 0; fi
+    # 锁被占用：持锁进程存活（cmdline 确认，防 PID 复用）则让位，否则视为陈旧锁清理重试
+    LP=$(cat "$LOCK/pid" 2>/dev/null)
+    if [ -n "$LP" ] && [ -d "/proc/$LP" ] && grep -q refresh_route "/proc/$LP/cmdline" 2>/dev/null; then
+        return 1
+    fi
+    log "清理陈旧锁 $LOCK（原持锁进程: $LP）"
+    rm -rf "$LOCK"
+    take_lock
+}
+if ! acquire_lock; then
+    log "已有实例在运行，跳过本次"
+    exit 2
+fi
 
 # 可选：连通性自检（移动 IPv6 DNS）
 ping6 -c 1 -W 3 2400:3200::1 >/dev/null 2>&1 && log "IPv6 连通性 OK" || log "!! ping 不通"
@@ -233,7 +258,8 @@ done
     }
 
     const isWatcherRunning = async () => {
-        const res = await runShellWithRoot(`if [ -f ${RRA.pidPath} ]; then P=$(timeout 2s awk '{print}' ${RRA.pidPath} 2>/dev/null); if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then echo running; else echo stopped; fi; else echo stopped; fi`)
+        // 除 PID 存活外，再校验 cmdline 确为调度器，防止重启后 PID 复用导致误判
+        const res = await runShellWithRoot(`P=$(timeout 2s awk '{print}' ${RRA.pidPath} 2>/dev/null); if [ -n "$P" ] && grep -q refresh_route_watch "/proc/$P/cmdline" 2>/dev/null; then echo running; else echo stopped; fi`)
         return (res?.content || '').includes('running')
     }
 
@@ -337,12 +363,8 @@ ping6 -c 1 -W 2 2400:3200::1 >/dev/null 2>&1 && echo "PING6:ok" || echo "PING6:f
             const [res, stRes] = await Promise.all([
                 runShellWithRoot(`
 ls ${RRA.rdPath} >/dev/null 2>&1 && echo "RD:1" || echo "RD:0"
-if [ -f ${RRA.pidPath} ]; then
-    P=$(timeout 2s awk '{print}' ${RRA.pidPath} 2>/dev/null)
-    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then echo "WATCH:1"; else echo "WATCH:0"; fi
-else
-    echo "WATCH:0"
-fi
+P=$(timeout 2s awk '{print}' ${RRA.pidPath} 2>/dev/null)
+if [ -n "$P" ] && grep -q refresh_route_watch "/proc/$P/cmdline" 2>/dev/null; then echo "WATCH:1"; else echo "WATCH:0"; fi
 grep -qF 'refresh_route_watch' ${RRA.bootPath} 2>/dev/null && echo "BOOT:1" || echo "BOOT:0"
 ls ${RRA.scriptPath} >/dev/null 2>&1 && echo "INST:1" || echo "INST:0"
 `),
@@ -438,9 +460,13 @@ ls ${RRA.scriptPath} >/dev/null 2>&1 && echo "INST:1" || echo "INST:0"
         if (!(await checkAdvancedFunc())) return createToast('请先启用高级功能', 'pink')
         if (!(await isInstalled())) return createToast('请先安装脚本', 'red')
         createToast('正在执行刷新（无 rdisc6 时约数秒，请稍候）...')
-        const res = await runShellWithRoot(`sh ${RRA.scriptPath}`, 60 * 1000)
+        // 末尾回显退出码：0=成功 1=出错 2=条件不满足而跳过（非移动卡 / 并发锁让位）
+        const res = await runShellWithRoot(`sh ${RRA.scriptPath}; echo "RRA_EXIT:$?"`, 60 * 1000)
         await Promise.all([refreshAll(), genLog()])
-        if (res.success) createToast('刷新完成，详情见日志', 'green')
+        const m = (res?.content || '').match(/RRA_EXIT:(\d+)/)
+        if (!m) createToast('执行超时或无输出，详情见日志', 'red')
+        else if (m[1] === '0') createToast('刷新完成，详情见日志', 'green')
+        else if (m[1] === '2') createToast('已跳过本次刷新（非移动卡或已有实例在运行），详情见日志', 'orange')
         else createToast('执行出错，详情见日志', 'red')
     }
 
@@ -503,8 +529,9 @@ ls ${RRA.scriptPath} >/dev/null 2>&1 && echo "INST:1" || echo "INST:0"
     }
 
     const stopWatcher = async (silent = false) => {
+        // 仅当 PID 的 cmdline 确为调度器时才 kill，防止 PID 复用误杀无关进程；pkill 兜底清理多实例
         // 用 [.] 正则避免 pkill 匹配到自身命令行
-        await runShellWithRoot(`kill $(timeout 2s awk '{print}' ${RRA.pidPath} 2>/dev/null) 2>/dev/null; rm -f ${RRA.pidPath}; pkill -f 'refresh_route_watch[.]sh' 2>/dev/null; true`)
+        await runShellWithRoot(`P=$(timeout 2s awk '{print}' ${RRA.pidPath} 2>/dev/null); if [ -n "$P" ] && grep -q refresh_route_watch "/proc/$P/cmdline" 2>/dev/null; then kill "$P" 2>/dev/null; fi; rm -f ${RRA.pidPath}; pkill -f 'refresh_route_watch[.]sh' 2>/dev/null; true`)
         if (!silent) createToast('调度器已停止', 'green')
         await refreshStates()
     }
@@ -517,6 +544,12 @@ ls ${RRA.scriptPath} >/dev/null 2>&1 && echo "INST:1" || echo "INST:0"
         if (!(await isInstalled())) {
             createToast('请先安装脚本', 'red')
             return false
+        }
+        // 防止重复启动：调度器已在运行则直接返回（多实例会并发重复调度）
+        if (await isWatcherRunning()) {
+            if (!silent) createToast('调度器已在运行中，无需重复启动')
+            await refreshStates()
+            return true
         }
         // 写入当前调度间隔
         await runShellWithRoot(`mkdir -p ${RRA.dir}`)
@@ -718,8 +751,9 @@ ls ${RRA.scriptPath} >/dev/null 2>&1 && echo "INST:1" || echo "INST:0"
         if (await isWatcherRunning()) {
             createToast('正在重启调度器以应用新间隔...')
             await stopWatcher(true)
-            await startWatcher(true)
-            createToast('调度器已应用新间隔', 'green')
+            const ok = await startWatcher(true)
+            if (ok) createToast('调度器已应用新间隔', 'green')
+            // 失败时 startWatcher 内部已提示「调度器启动失败」，此处不再重复
         }
     }
 
