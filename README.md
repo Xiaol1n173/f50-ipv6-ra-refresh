@@ -1,4 +1,4 @@
-# IPv6 RA 路由修复（F50+CMCC）
+# UFI-TOOLS F50 IPv6 RA 路由刷新修复插件（CMCC）
 
 ## 原理
 
