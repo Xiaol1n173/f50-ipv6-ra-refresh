@@ -16,7 +16,7 @@
         logPath: '/data/kano_ipv6_ra/refresh_route.log',
         bootPath: '/sdcard/ufi_tools_boot.sh',                         // UFI-TOOLS 平台标准开机脚本
         //defaultUrl: 'https://pan.kanokano.cn/d/UFI-TOOLS-UPDATE/plugins/rdisc6',
-        defaultUrl: 'https://raw.githubusercontent.com/Xiaol1n173/UFI-TOOLS-IPv6-RA-/refs/heads/main/rdisc6',
+        defaultUrl: 'https://raw.githubusercontent.com/Xiaol1n173/f50-ipv6-ra-refresh/refs/heads/main/rdisc6',
         raLifetime: 65535,   // 与网关 RA 下发的 Router Lifetime 一致
     }
 
