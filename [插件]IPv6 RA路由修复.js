@@ -30,7 +30,8 @@
 
     // 核心脚本：移植自 refresh_route.sh（修复中兴 F50 移动卡 IPv6 默认路由不随 RA 刷新、65536s 后掉线）
     // 无阈值判断：完全由定时调度驱动，每次触发直接续期
-    // 并发锁：同一时刻仅允许一个实例执行（watcher 调度与手动刷新互斥）
+    // 并发锁：同一时刻仅允许一个实例执行（watcher 调度与手动刷新互斥）；
+    // 锁带存活校验与竞态重试，陈旧锁自动清理，PID 复用不会导致锁永久卡死
     // 返回值：0=正常或无需操作  1=出错  2=条件不满足而跳过（含并发锁让位）
     const REFRESH_SH = String.raw`#!/system/bin/sh
 #
@@ -61,10 +62,22 @@ export PATH
 log() { echo "[$(date '+%m-%d %H:%M:%S')] $*" | tee -a "$LOG" 2>/dev/null; }
 set_strategy() { printf '%s\n%s\n' "$1" "$(date +%s)" > "$STRATEGY_FILE" 2>/dev/null; }
 
+# 目录/日志自愈：目录缺失会让并发锁永远拿不到（每次都误报"已有实例在运行"），
+# 日志打不开会让 2>>"$LOG" 重定向失败、导致后面的 ip route 命令根本不执行（刷新静默失效）
+mkdir -p "$STATE_DIR" 2>/dev/null
+# 确保日志文件存在；实在创建不了就降级为 /dev/null，绝不让日志问题阻断刷新本身
+touch "$LOG" 2>/dev/null || LOG="/dev/null"
+
 [ -f "$LOG" ] && [ "$(wc -c < "$LOG")" -gt "$LOG_MAX" ] && : > "$LOG"
 
 # ================= 并发锁（watcher 调度与手动刷新互斥，自动清理陈旧锁） =================
 LOCK="$STATE_DIR/.refresh_route.lock"
+# 持锁进程确认：cmdline 必须含 refresh_route.sh。
+# 注意用 refresh_route[.]sh 精确区分核心脚本与调度器 refresh_route_watch.sh——
+# 否则调度器进程复用了残留锁里的 PID 时会被误判为"持锁进程存活"，陈旧锁永远清不掉
+lock_busy() {
+    [ -n "$1" ] && [ -d "/proc/$1" ] && grep -q 'refresh_route[.]sh' "/proc/$1/cmdline" 2>/dev/null
+}
 take_lock() {
     mkdir "$LOCK" 2>/dev/null || return 1
     echo $$ > "$LOCK/pid"
@@ -73,17 +86,32 @@ take_lock() {
 }
 acquire_lock() {
     if take_lock; then return 0; fi
-    # 锁被占用：持锁进程存活（cmdline 确认，防 PID 复用）则让位，否则视为陈旧锁清理重试
     LP=$(cat "$LOCK/pid" 2>/dev/null)
-    if [ -n "$LP" ] && [ -d "/proc/$LP" ] && grep -q refresh_route "/proc/$LP/cmdline" 2>/dev/null; then
-        return 1
+    if lock_busy "$LP"; then return 1; fi
+    if [ -z "$LP" ]; then
+        # 锁目录存在但 pid 尚未写入：多为并发加锁竞态（对方 mkdir 成功、还没来得及写 pid）。
+        # 短暂重试让位，而不是当作陈旧锁贸然 rm -rf——否则会误删对方刚建好的锁，造成双实例并发
+        sleep 1
+        take_lock && return 0
+        LP=$(cat "$LOCK/pid" 2>/dev/null)
+        if lock_busy "$LP"; then return 1; fi
     fi
+    [ -n "$LP" ] || LP="<未写入>"
     log "清理陈旧锁 $LOCK（原持锁进程: $LP）"
     rm -rf "$LOCK"
     take_lock
 }
 if ! acquire_lock; then
-    log "已有实例在运行，跳过本次"
+    [ -n "$LP" ] || LP=未知
+    log "已有实例在运行（持锁 PID: $LP），跳过本次"
+    exit 2
+fi
+# 双保险：防两实例交叉清理同一把陈旧锁的极小竞态窗口（自己刚 mkdir 好的锁被对方 rm 重建），
+# 回验锁内 PID 归属，不是自己就立刻让位，绝不双实例并发执行；
+# 让位前先解除 EXIT trap，否则退出时会把对方的锁 rm 掉
+if [ "$(cat "$LOCK/pid" 2>/dev/null)" != "$$" ]; then
+    trap '' EXIT INT TERM
+    log "并发锁竞态让位，跳过本次"
     exit 2
 fi
 
@@ -214,10 +242,14 @@ exit 1
 `
 
     // 定时调度器：每隔 INTERVAL 秒执行一次 refresh_route.sh，直到被 kill
+    // 单实例保护：mkdir 原子锁 + 存活校验（防 PID 复用），杜绝双击「启动调度」、
+    // 开机脚本重复拉起、残留多行自启等情况下出现双调度器（双实例会周期性撞并发锁，
+    // 在日志里间歇性打出"已有实例在运行，跳过本次"）
     const WATCH_SH = String.raw`#!/system/bin/sh
 # refresh_route_watch.sh —— IPv6 RA 路由保活调度器（由 UFI-TOOLS 插件生成）
 CONF=/data/kano_ipv6_ra/refresh_route_watch.conf
 PIDF=/data/kano_ipv6_ra/refresh_route_watch.pid
+WLOCK=/data/kano_ipv6_ra/.watcher.lock
 INTERVAL=3600
 if [ -f "$CONF" ]; then
     V=$(timeout 2s awk '{print}' "$CONF" | tr -d '\r\n \t')
@@ -227,7 +259,26 @@ if [ -f "$CONF" ]; then
     esac
 fi
 [ "$INTERVAL" -ge 60 ] 2>/dev/null || INTERVAL=3600
-echo $$ > "$PIDF"
+
+take_wlock() {
+    mkdir "$WLOCK" 2>/dev/null || return 1
+    echo $$ > "$WLOCK/pid"
+    echo $$ > "$PIDF"
+    # 退出时仅清理仍属于自己的锁与 PID（避免"停旧起新"时延迟触发的 trap 误删继任者刚建好的锁）
+    trap '[ "$(cat "$WLOCK/pid" 2>/dev/null)" = "$$" ] && rm -rf "$WLOCK" 2>/dev/null; [ "$(cat "$PIDF" 2>/dev/null)" = "$$" ] && rm -f "$PIDF" 2>/dev/null' EXIT INT TERM
+    return 0
+}
+if ! take_wlock; then
+    OP=$(cat "$WLOCK/pid" 2>/dev/null)
+    if [ -n "$OP" ] && [ -d "/proc/$OP" ] && grep -q refresh_route_watch "/proc/$OP/cmdline" 2>/dev/null; then
+        exit 0   # 已有调度器存活，让位
+    fi
+    rm -rf "$WLOCK"   # 陈旧锁（原持锁进程已不在）
+    take_wlock || exit 0
+fi
+# 双保险：防两实例交叉清理同一把陈旧锁的极小竞态窗口，回验锁内 PID 归属，不是自己就让位
+[ "$(cat "$WLOCK/pid" 2>/dev/null)" = "$$" ] || exit 0
+
 while true; do
     sh /data/kano_ipv6_ra/refresh_route.sh >/dev/null 2>&1
     sleep "$INTERVAL"
@@ -453,7 +504,13 @@ ls ${RRA.scriptPath} >/dev/null 2>&1 && echo "INST:1" || echo "INST:0"
         }
         const chmod = await runShellWithRoot(`chmod 777 ${RRA.scriptPath} ${RRA.watchPath}`)
         if (!chmod.success) return createToast('设置执行权限失败', 'red')
-        createToast('脚本安装/更新成功', 'green')
+        // 调度器正在运行则自动重启，确保新版调度器（单实例锁）/核心脚本立即生效
+        let restarted = false
+        if (await isWatcherRunning()) {
+            await stopWatcher(true)
+            restarted = await startWatcher(true)
+        }
+        createToast(restarted ? '脚本安装/更新成功（调度器已重启加载新版）' : '脚本安装/更新成功', 'green')
         await refreshAll()
     }
 
@@ -570,8 +627,9 @@ fi
 
     const stopWatcher = async (silent = false) => {
         // 仅当 PID 的 cmdline 确为调度器时才 kill，防止 PID 复用误杀无关进程；pkill 兜底清理多实例
-        // 用 [.] 正则避免 pkill 匹配到自身命令行
-        await runShellWithRoot(`P=$(timeout 2s awk '{print}' ${RRA.pidPath} 2>/dev/null); if [ -n "$P" ] && grep -q refresh_route_watch "/proc/$P/cmdline" 2>/dev/null; then kill "$P" 2>/dev/null; fi; rm -f ${RRA.pidPath}; pkill -f 'refresh_route_watch[.]sh' 2>/dev/null; true`)
+        // 用 [.] 正则避免 pkill 匹配到自身命令行；1 秒后仍存活则升级 kill -9（避免 trap 被 sleep
+        // 拖延导致旧实例长期占着 .watcher.lock，新实例起不来；-9 留下的陈旧锁由新实例自愈清理）
+        await runShellWithRoot(`P=$(timeout 2s awk '{print}' ${RRA.pidPath} 2>/dev/null); if [ -n "$P" ] && grep -q refresh_route_watch "/proc/$P/cmdline" 2>/dev/null; then kill "$P" 2>/dev/null; sleep 1; [ -d "/proc/$P" ] && grep -q refresh_route_watch "/proc/$P/cmdline" 2>/dev/null && kill -9 "$P" 2>/dev/null; fi; rm -f ${RRA.pidPath}; pkill -f 'refresh_route_watch[.]sh' 2>/dev/null; true`)
         if (!silent) createToast('调度器已停止', 'green')
         await refreshStates()
     }
@@ -782,10 +840,15 @@ fi
         createToast('日志已刷新')
     }
     document.querySelector('#rra_log_clear').onclick = async () => {
-        await runShellWithRoot(`: > ${RRA.logPath}`)
+        // 清空而非删除：顺带确保目录与日志文件存在（防止日志缺失影响脚本自愈与记录），
+        // 并用标记校验结果，避免"清空后文件消失"这类静默异常
+        const res = await runShellWithRoot(`mkdir -p ${RRA.dir} && : > ${RRA.logPath} && chmod 666 ${RRA.logPath} 2>/dev/null; [ -f ${RRA.logPath} ] && echo RRA_LOG_OK || echo RRA_LOG_FAIL`)
+        const ok = (res?.content || '').includes('RRA_LOG_OK')
+        const ta = document.querySelector('#rra_log')
         prevLogText = ''
+        if (ta) ta.value = ''   // 直接清显示：genLog 的内容去重会跳过空结果，导致旧日志残留
         await genLog()
-        createToast('日志已清空', 'green')
+        ok ? createToast('日志已清空', 'green') : createToast('清空失败：日志文件无法创建，请检查插件目录', 'red')
     }
 
     // ---------- 下载地址输入框 ----------
