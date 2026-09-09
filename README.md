@@ -1,8 +1,8 @@
-# UFI-TOOLS F50 IPv6 RA 路由刷新修复插件（CMCC）
+# UFI-TOOLS F50 IPv6 RA 路由刷新修复插件
 
 ## 原理
 
-F50 用移动卡时仅在数据连接建立瞬间收到一次 RA，随后不再发送周期 RA，其默认路由：
+F50 仅在数据连接建立瞬间收到一次 RA，随后不再发送周期 RA，其默认路由：
 
 ```
 default via fe80::X dev sipa_ethN ... expires 65536sec
@@ -11,7 +11,8 @@ default via fe80::X dev sipa_ethN ... expires 65536sec
 到期后不会被刷新，导致 IPv6 断网。本方案定时检查该路由剩余有效期并续期：
 
 - **路径一（标准）**：发 Router Solicitation 引出网关真 RA，内核按 ND 规程自动刷新 —— 需要 rdisc6（可选安装，没有则自动跳过）
-- **路径二（同构）**：手工重建一条与 RA 原生路由完全同构的路由：`proto ra` + `hoplimit` + `metric` + 与 RA 一致的 Router Lifetime
+- **路径二（同构）**：手工重建一条与 RA 原生路由完全同构的路由：`proto ra` + `hoplimit` + `metric` + 与 RA 一致的 expires。
+   （受https://blog.cerarin.com/archives/66 启发）
 
 ## 刷新流程
 
