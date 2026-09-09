@@ -28,17 +28,17 @@
         ra_replace_min: 'RA 同构路由重建（降级最小参数 replace）',
     }
 
-    // 核心脚本：移植自 refresh_route.sh（修复中兴 F50 移动卡 IPv6 默认路由不随 RA 刷新、65536s 后掉线）
+    // 核心脚本：移植自 refresh_route.sh（修复中兴 F50 移动/电信卡 IPv6 默认路由不随 RA 刷新、65536s 后掉线）
     // 无阈值判断：完全由定时调度驱动，每次触发直接续期
     // 并发锁：同一时刻仅允许一个实例执行（watcher 调度与手动刷新互斥）；
     // 锁带存活校验与竞态重试，陈旧锁自动清理，PID 复用不会导致锁永久卡死
     // 返回值：0=正常或无需操作  1=出错  2=条件不满足而跳过（含并发锁让位）
     const REFRESH_SH = String.raw`#!/system/bin/sh
 #
-# refresh_route.sh —— 修复中兴 F50（移动卡）IPv6 默认路由不随 RA 刷新、65536s 后掉线的问题
+# refresh_route.sh —— 修复中兴 F50（移动/电信卡）IPv6 默认路由不随 RA 刷新、65536s 后掉线的问题
 # 由 UFI-TOOLS「IPv6 RA路由修复」插件安装/维护，由 refresh_route_watch.sh 定时调度执行
 #
-# 原理：F50 用移动卡时仅在数据连接建立瞬间收到一次 RA，随后不再发送周期 RA，默认路由
+# 原理：F50 用移动/电信卡时仅在数据连接建立瞬间收到一次 RA，随后不再发送周期 RA，默认路由
 #       default via fe80::X dev sipa_ethN ... expires 65536sec
 #       到期后不会被刷新，导致 IPv6 断网。本脚本每次被调度时直接为默认路由续期：
 #   路径一（标准）：发 Router Solicitation 引出网关真 RA，内核按 ND 规程自动刷新（需 rdisc6）
@@ -115,7 +115,7 @@ if [ "$(cat "$LOCK/pid" 2>/dev/null)" != "$$" ]; then
     exit 2
 fi
 
-# 可选：连通性自检（移动 IPv6 DNS）
+# 可选：连通性自检（公共 IPv6 DNS）
 ping6 -c 1 -W 3 2400:3200::1 >/dev/null 2>&1 && log "IPv6 连通性 OK" || log "!! ping 不通"
 
 log "===== 开始检查 ====="
@@ -123,7 +123,7 @@ log "===== 开始检查 ====="
 # ================= 运营商白名单 =================
 OPERATOR=$(getprop gsm.sim.operator.alpha 2>/dev/null | tr -d '\r\n\t ,' | tr '[:upper:]' '[:lower:]')
 case "$OPERATOR" in
-    *移动*|*cmcc*|*chinamobile*)
+    *移动*|*cmcc*|*chinamobile*|*电信*|*ctcc*|*chinatelecom*|*telecom*)
         log "运营商: $OPERATOR"
         ;;
     "")
@@ -131,7 +131,7 @@ case "$OPERATOR" in
         exit 1
         ;;
     *)
-        log "非中国移动($OPERATOR)，跳过"
+        log "非中国移动/电信($OPERATOR)，跳过"
         exit 2
         ;;
 esac
@@ -518,13 +518,13 @@ ls ${RRA.scriptPath} >/dev/null 2>&1 && echo "INST:1" || echo "INST:0"
         if (!(await checkAdvancedFunc())) return createToast('请先启用高级功能', 'pink')
         if (!(await isInstalled())) return createToast('请先安装脚本', 'red')
         createToast('正在执行刷新（无 rdisc6 时约数秒，请稍候）...')
-        // 末尾回显退出码：0=成功 1=出错 2=条件不满足而跳过（非移动卡 / 并发锁让位）
+        // 末尾回显退出码：0=成功 1=出错 2=条件不满足而跳过（非移动/电信卡 / 并发锁让位）
         const res = await runShellWithRoot(`sh ${RRA.scriptPath}; echo "RRA_EXIT:$?"`, 60 * 1000)
         await Promise.all([refreshAll(), genLog()])
         const m = (res?.content || '').match(/RRA_EXIT:(\d+)/)
         if (!m) createToast('执行超时或无输出，详情见日志', 'red')
         else if (m[1] === '0') createToast('刷新完成，详情见日志', 'green')
-        else if (m[1] === '2') createToast('已跳过本次刷新（非移动卡或已有实例在运行），详情见日志', 'orange')
+        else if (m[1] === '2') createToast('已跳过本次刷新（非移动/电信卡或已有实例在运行），详情见日志', 'orange')
         else createToast('执行出错，详情见日志', 'red')
     }
 
@@ -688,7 +688,7 @@ fi
                                 <div id="rra_bar" style="height:100%;width:0%;background:#4caf50;transition:all .5s;"></div>
                             </div>
                             <div style="margin-top:6px;font-size:.66rem;opacity:.75;">
-                                原理：F50 用移动卡时仅在数据连接建立瞬间收到一次 RA，之后不会收到周期RA，造成ipv6默认路由 expires 65536s 到期后不会被刷新，导致 IPv6 断网；本插件由定时调度周期性续期，优先使用 rdisc6 进行标准 ND 流程，不可用时回退到仅对原路由续期。
+                                原理：F50 用移动/电信卡时仅在数据连接建立瞬间收到一次 RA，之后不会收到周期RA，造成ipv6默认路由 expires 65536s 到期后不会被刷新，导致 IPv6 断网；本插件由定时调度周期性续期，优先使用 rdisc6 进行标准 ND 流程，不可用时回退到仅对原路由续期。
                             </div>
                         </div>
                         <div id="rra_action_box" style="margin:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center;"></div>
