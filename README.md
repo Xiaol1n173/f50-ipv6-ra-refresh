@@ -38,10 +38,10 @@ ip -6 route replace default via fe80::2 dev sipa_eth8 table sipa_eth8 expires 60
 ## 插件部署
 
 1. 将 `rdisc6` 托管到可直链下载的 URL，或在插件面板用「上传rdisc6」从本地导入（下载/上传后自动校验：大小、ELF 魔数、可执行性）
-2. 在 UFI-TOOLS 中安装插件脚本，全部文件位于 `/data/kano_ipv6_ra/`：
+2. 在 UFI-TOOLS 中安装插件脚本，全部文件位于 `/data/xl_ipv6_ra/`：
 
 ```
-/data/kano_ipv6_ra/
+/data/xl_ipv6_ra/
 ├── refresh_route.sh          # 核心修复脚本
 ├── refresh_route_watch.sh    # 调度器（循环执行上面的脚本）
 ├── refresh_route_watch.conf  # 调度间隔（秒）

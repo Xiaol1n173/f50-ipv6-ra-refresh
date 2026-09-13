@@ -1,19 +1,19 @@
 //<script>
 (async () => {
     // 防止重复加载
-    if (document.querySelector('#IFRAME_KANO_RRA')) return
+    if (document.querySelector('#IFRAME_XL_RRA')) return
 
-    // ================= 常量配置（统一使用插件标准目录 /data/kano_ipv6_ra） =================
+    // ================= 常量配置（统一使用插件标准目录 /data/xl_ipv6_ra） =================
     const RRA = {
         name: 'IPv6 RA路由修复',
-        dir: '/data/kano_ipv6_ra',                                     // 插件专属目录
-        scriptPath: '/data/kano_ipv6_ra/refresh_route.sh',             // 核心修复脚本
-        watchPath: '/data/kano_ipv6_ra/refresh_route_watch.sh',        // 定时调度器
-        confPath: '/data/kano_ipv6_ra/refresh_route_watch.conf',       // 调度间隔(秒)
-        pidPath: '/data/kano_ipv6_ra/refresh_route_watch.pid',         // 调度器 pid
-        rdPath: '/data/kano_ipv6_ra/rdisc6',                           // rdisc6 aarch64 静态构建
-        strategyPath: '/data/kano_ipv6_ra/last_strategy',              // 上次刷新成功策略
-        logPath: '/data/kano_ipv6_ra/refresh_route.log',
+        dir: '/data/xl_ipv6_ra',                                     // 插件专属目录
+        scriptPath: '/data/xl_ipv6_ra/refresh_route.sh',             // 核心修复脚本
+        watchPath: '/data/xl_ipv6_ra/refresh_route_watch.sh',        // 定时调度器
+        confPath: '/data/xl_ipv6_ra/refresh_route_watch.conf',       // 调度间隔(秒)
+        pidPath: '/data/xl_ipv6_ra/refresh_route_watch.pid',         // 调度器 pid
+        rdPath: '/data/xl_ipv6_ra/rdisc6',                           // rdisc6 aarch64 静态构建
+        strategyPath: '/data/xl_ipv6_ra/last_strategy',              // 上次刷新成功策略
+        logPath: '/data/xl_ipv6_ra/refresh_route.log',
         bootPath: '/sdcard/ufi_tools_boot.sh',                         // UFI-TOOLS 平台标准开机脚本
         //defaultUrl: 'https://pan.kanokano.cn/d/UFI-TOOLS-UPDATE/plugins/rdisc6',
         defaultUrl: 'https://raw.githubusercontent.com/Xiaol1n173/f50-ipv6-ra-refresh/refs/heads/main/rdisc6',
@@ -50,11 +50,11 @@ RA_LIFETIME=65535           # 与网关 RA 下发的 Router Lifetime 一致（�
 GW_FALLBACK="fe80::2"       # 路由完全丢失时的兜底网关
 IF_PREFIX="sipa_eth"        # 厂商数据口前缀（自动探测 0~15 中 state UP 的那个）
 IF_FALLBACK="sipa_eth8"     # 探测不到 UP 口时的兜底接口
-STATE_DIR="/data/kano_ipv6_ra"
-LOG="/data/kano_ipv6_ra/refresh_route.log"
+STATE_DIR="/data/xl_ipv6_ra"
+LOG="/data/xl_ipv6_ra/refresh_route.log"
 LOG_MAX=65536               # 日志超过 64KB 清空重记
-STRATEGY_FILE="/data/kano_ipv6_ra/last_strategy"
-RDISC6="/data/kano_ipv6_ra/rdisc6"
+STRATEGY_FILE="/data/xl_ipv6_ra/last_strategy"
+RDISC6="/data/xl_ipv6_ra/rdisc6"
 
 PATH=/system/bin:/system/xbin:/vendor/bin:/odm/bin:/sbin
 export PATH
@@ -247,9 +247,9 @@ exit 1
     // 在日志里间歇性打出"已有实例在运行，跳过本次"）
     const WATCH_SH = String.raw`#!/system/bin/sh
 # refresh_route_watch.sh —— IPv6 RA 路由保活调度器（由 UFI-TOOLS 插件生成）
-CONF=/data/kano_ipv6_ra/refresh_route_watch.conf
-PIDF=/data/kano_ipv6_ra/refresh_route_watch.pid
-WLOCK=/data/kano_ipv6_ra/.watcher.lock
+CONF=/data/xl_ipv6_ra/refresh_route_watch.conf
+PIDF=/data/xl_ipv6_ra/refresh_route_watch.pid
+WLOCK=/data/xl_ipv6_ra/.watcher.lock
 INTERVAL=3600
 if [ -f "$CONF" ]; then
     V=$(timeout 2s awk '{print}' "$CONF" | tr -d '\r\n \t')
@@ -280,7 +280,7 @@ fi
 [ "$(cat "$WLOCK/pid" 2>/dev/null)" = "$$" ] || exit 0
 
 while true; do
-    sh /data/kano_ipv6_ra/refresh_route.sh >/dev/null 2>&1
+    sh /data/xl_ipv6_ra/refresh_route.sh >/dev/null 2>&1
     sleep "$INTERVAL"
 done
 `
@@ -671,7 +671,7 @@ fi
     const mmContainer = document.querySelector('.functions-container')
     if (!mmContainer) return
     mmContainer.insertAdjacentHTML("afterend", `
-            <div id="IFRAME_KANO_RRA" style="width: 100%; margin-top: 10px;">
+            <div id="IFRAME_XL_RRA" style="width: 100%; margin-top: 10px;">
                 <div class="title" style="margin: 6px 0 ;">
                     <strong>IPv6 RA路由修复</strong>
                     <div style="display: inline-block;" id="collapse_rra_btn"></div>

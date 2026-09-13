@@ -12,7 +12,7 @@
 #   路径二（同构）：手工重建一条与 RA 原生路由完全同构的路由：
 #                   proto ra + hoplimit + metric + 与 RA 一致的 Router Lifetime
 # 部署（crontab，每小时检查一次，日志由脚本自理）：
-#   0 * * * * sh /data/kano_cron/scripts/refresh_route.sh
+#   0 * * * * sh /data/xl_cron/scripts/refresh_route.sh
 #
 # 返回值：0=正常或无需操作  1=出错  2=条件不满足而跳过
 #
@@ -54,7 +54,7 @@ IF_PREFIX="sipa_eth"        # 厂商数据口前缀（自动探测 0~15 中 stat
 IF_FALLBACK="sipa_eth8"     # 探测不到 UP 口时的兜底接口（按你设备实际填）
 LOG="/sdcard/refresh_route.log"
 LOG_MAX=65536               # 日志超过 64KB 清空重记
-RDISC6="/data/kano_cron/bin/rdisc6" # rdisc6 的 aarch64 musl 静态构建
+RDISC6="/data/xl_cron/bin/rdisc6" # rdisc6 的 aarch64 musl 静态构建
 
 PATH=/system/bin:/system/xbin:/vendor/bin:/odm/bin:/sbin
 export PATH
